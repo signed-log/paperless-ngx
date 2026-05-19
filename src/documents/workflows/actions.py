@@ -4,7 +4,6 @@ from pathlib import Path
 
 from django.conf import settings
 from django.contrib.auth.models import User
-from django.db import transaction
 from django.utils import timezone
 
 from documents.data_models import ConsumableDocument
@@ -277,6 +276,7 @@ def execute_password_removal_action(
     action: WorkflowAction,
     document: Document | ConsumableDocument,
     logging_group,
+    source_file: Path | None = None,
 ) -> None:
     """
     Try to remove a password from a document using the configured list.
@@ -296,15 +296,14 @@ def execute_password_removal_action(
         # hook the consumption-finished signal to attempt password removal later
         def handler(sender, **kwargs):
             consumed_document: Document = kwargs.get("document")
-            document_consumption_finished.disconnect(handler)
             if consumed_document is not None:
-                transaction.on_commit(
-                    lambda: execute_password_removal_action(
-                        action,
-                        consumed_document,
-                        logging_group,
-                    ),
+                execute_password_removal_action(
+                    action,
+                    consumed_document,
+                    logging_group,
+                    source_file=kwargs.get("original_file"),
                 )
+            document_consumption_finished.disconnect(handler)
 
         document_consumption_finished.connect(handler, weak=False)
         return
@@ -319,6 +318,7 @@ def execute_password_removal_action(
                 password=password,
                 update_document=True,
                 user=document.owner,
+                source_paths_by_id={document.id: source_file} if source_file else None,
             )
             logger.info(
                 "Unlocked document %s using workflow action %s",
