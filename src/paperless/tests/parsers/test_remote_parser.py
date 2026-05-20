@@ -373,8 +373,8 @@ class TestRemoteParserParseError:
 
         remote_parser.parse(simple_digital_pdf_file, "application/pdf")
 
-        mock_log.error.assert_called_once()
-        assert "Azure AI Vision parsing failed" in mock_log.error.call_args[0][0]
+        mock_log.exception.assert_called_once()
+        assert "Azure AI Vision parsing failed" in mock_log.exception.call_args[0][0]
 
 
 # ---------------------------------------------------------------------------

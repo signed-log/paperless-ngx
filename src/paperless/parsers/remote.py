@@ -425,7 +425,7 @@ class RemoteDocumentParser:
             return result.content
 
         except Exception as e:
-            logger.error("Azure AI Vision parsing failed: %s", e)
+            logger.exception("Azure AI Vision parsing failed: %s", e)
 
         finally:
             client.close()
