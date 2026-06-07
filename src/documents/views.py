@@ -4011,7 +4011,7 @@ class RemoteVersionView(GenericAPIView[Any]):
 
 
 class _TasksViewSetSchema(AutoSchema):
-    _UNPAGINATED_ACTIONS = frozenset({"summary", "active"})
+    _UNPAGINATED_ACTIONS = frozenset({"summary", "active", "status_counts"})
 
     def _get_paginator(self):
         if getattr(self.view, "action", None) in self._UNPAGINATED_ACTIONS:
@@ -4071,6 +4071,19 @@ class _TasksViewSetSchema(AutoSchema):
             ),
         ],
     ),
+    status_counts=extend_schema(
+        responses={
+            200: inline_serializer(
+                name="TaskStatusCounts",
+                fields={
+                    "all": serializers.IntegerField(),
+                    "needs_attention": serializers.IntegerField(),
+                    "in_progress": serializers.IntegerField(),
+                    "completed": serializers.IntegerField(),
+                },
+            ),
+        },
+    ),
     active=extend_schema(
         description="Currently pending and running tasks (capped at 50).",
         responses={200: TaskSerializerV10(many=True)},
@@ -4124,6 +4137,7 @@ class TasksViewSet(ReadOnlyModelViewSet[PaperlessTask]):
         PaperlessTask.TaskType.SANITY_CHECK: (sanity_check, {"raise_on_error": False}),
         PaperlessTask.TaskType.LLM_INDEX: (llmindex_index, {"rebuild": False}),
     }
+    _STATUS_COUNT_EXCLUDED_FILTERS = frozenset({"status", "is_complete"})
 
     def get_serializer_class(self):
         # v9: use backwards-compatible serializer with old field names
@@ -4163,6 +4177,21 @@ class TasksViewSet(ReadOnlyModelViewSet[PaperlessTask]):
         if task_id is not None:
             queryset = queryset.filter(task_id=task_id)
         return queryset
+
+    def get_status_count_queryset(self):
+        """Apply task filters except the status dimensions represented by the counts."""
+        query_params = self.request.query_params.copy()
+        for param in self._STATUS_COUNT_EXCLUDED_FILTERS:
+            query_params.pop(param, None)
+
+        filterset = self.filterset_class(
+            data=query_params,
+            queryset=self.get_queryset(),
+            request=self.request,
+        )
+        if not filterset.is_valid():
+            raise ValidationError(filterset.errors)
+        return filterset.qs
 
     @action(
         methods=["post"],
@@ -4232,6 +4261,34 @@ class TasksViewSet(ReadOnlyModelViewSet[PaperlessTask]):
         )
         serializer = TaskSummarySerializer(data, many=True)
         return Response(serializer.data)
+
+    @action(methods=["get"], detail=False)
+    def status_counts(self, request):
+        """Aggregated task counts for task UI sections."""
+        queryset = self.get_status_count_queryset()
+        counts = queryset.aggregate(
+            all=Count("id"),
+            needs_attention=Count(
+                "id",
+                filter=Q(
+                    status__in=[
+                        PaperlessTask.Status.FAILURE,
+                        PaperlessTask.Status.REVOKED,
+                    ],
+                ),
+            ),
+            in_progress=Count(
+                "id",
+                filter=Q(
+                    status__in=[
+                        PaperlessTask.Status.PENDING,
+                        PaperlessTask.Status.STARTED,
+                    ],
+                ),
+            ),
+            completed=Count("id", filter=Q(status=PaperlessTask.Status.SUCCESS)),
+        )
+        return Response(counts)
 
     @action(methods=["get"], detail=False)
     def active(self, request):
