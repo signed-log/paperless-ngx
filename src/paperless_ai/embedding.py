@@ -99,9 +99,13 @@ _DEFAULT_MODEL_NAMES = {
 
 def get_configured_model_name(config: AIConfig) -> str:
     """Return the canonical name of the currently configured embedding model."""
-    default = _DEFAULT_MODEL_NAMES.get(
-        config.llm_embedding_backend,
-        "sentence-transformers/all-MiniLM-L6-v2",
+    # dict.get(key, default) overload resolution fails for TextChoices keys in some
+    # type checkers; use `or` fallback to avoid the ambiguity.
+    default = (
+        _DEFAULT_MODEL_NAMES.get(
+            config.llm_embedding_backend,
+        )
+        or "sentence-transformers/all-MiniLM-L6-v2"
     )
     return config.llm_embedding_model or default
 
@@ -112,15 +116,11 @@ def _normalize_llm_index_text(text: str) -> str:
 
 
 def build_llm_index_text(doc: Document) -> str:
-    # TODO: Filename, Storage Path, and Archive Serial Number are short structured
-    # values that could move to node.metadata (excluded from embeddings, visible to
-    # LLM via metadata prepend) — same pattern as title/tags/correspondent. Notes
-    # and Custom Fields should stay here: Notes can be long free text, Custom Fields
-    # are dynamic in count and best kept in the embedding.
+    # Short structured fields (filename, storage path, ASN, title, tags, ...) live
+    # in node.metadata: excluded from embeddings, shown to the LLM via metadata
+    # prepend. Notes and Custom Fields stay in the body: Notes can be long free
+    # text, Custom Fields are dynamic in count and best kept in the embedding.
     lines = [
-        f"Filename: {doc.filename}",
-        f"Storage Path: {doc.storage_path.name if doc.storage_path else ''}",
-        f"Archive Serial Number: {doc.archive_serial_number or ''}",
         f"Notes: {','.join([str(c.note) for c in Note.objects.filter(document=doc)])}",
     ]
 

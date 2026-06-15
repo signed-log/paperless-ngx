@@ -1,4 +1,3 @@
-import json
 from pathlib import Path
 from unittest.mock import MagicMock
 from unittest.mock import patch
@@ -7,6 +6,7 @@ import pytest
 import pytest_mock
 from django.test import override_settings
 from django.utils import timezone
+from llama_index.core.schema import MetadataMode
 
 from documents.models import Document
 from documents.models import PaperlessTask
@@ -17,6 +17,7 @@ from documents.tests.factories import PaperlessTaskFactory
 from paperless.models import ApplicationConfiguration
 from paperless_ai import indexing
 from paperless_ai.tests.conftest import FakeEmbedding
+from paperless_ai.vector_store import PaperlessSqliteVecVectorStore
 
 
 @pytest.fixture
@@ -33,12 +34,22 @@ def test_build_document_node(real_document: Document) -> None:
     nodes = indexing.build_document_node(real_document)
     assert len(nodes) > 0
     assert nodes[0].metadata["document_id"] == str(real_document.id)
+    assert nodes[0].metadata["filename"] == real_document.filename
+    assert nodes[0].metadata["storage_path"] == (
+        real_document.storage_path.name if real_document.storage_path else None
+    )
+    assert (
+        nodes[0].metadata["archive_serial_number"]
+        == real_document.archive_serial_number
+    )
+    assert "filename" in nodes[0].excluded_embed_metadata_keys
+    assert "filename" not in nodes[0].excluded_llm_metadata_keys
 
 
 @pytest.mark.django_db
 def test_build_document_node_sets_ref_doc_id(real_document: Document) -> None:
     """Every node produced by build_document_node must carry the paperless document id
-    as its ref_doc_id so that the LanceDB adapter's delete(str(doc.id)) works correctly."""
+    as its ref_doc_id so that the vector store's delete(str(doc.id)) works correctly."""
     nodes = indexing.build_document_node(real_document)
     assert len(nodes) > 0, "Expected at least one node"
     for node in nodes:
@@ -58,8 +69,6 @@ def test_build_document_node_excludes_metadata_from_embedding(
     double the token count and exceed embedding models with small context
     windows (e.g. nomic-embed-text via Ollama defaults to num_ctx=2048).
     """
-    from llama_index.core.schema import MetadataMode
-
     nodes = indexing.build_document_node(real_document)
     for node in nodes:
         embed_text = node.get_content(metadata_mode=MetadataMode.EMBED)
@@ -91,8 +100,6 @@ def test_build_document_node_excludes_document_id_from_llm_context(
     real_document: Document,
 ) -> None:
     """document_id is an internal key and must not appear in LLM context text."""
-    from llama_index.core.schema import MetadataMode
-
     nodes = indexing.build_document_node(real_document)
     assert len(nodes) > 0
     for node in nodes:
@@ -155,29 +162,6 @@ def test_update_llm_index(
 
 
 @pytest.mark.django_db
-def test_update_llm_index_cleans_stale_meta_on_rebuild(
-    temp_llm_index_dir: Path,
-    real_document: Document,
-    mock_embed_model: FakeEmbedding,
-) -> None:
-    # A meta.json left over from the FAISS era (or written by older code) must be
-    # deleted on rebuild so stale artifacts don't accumulate on disk.
-    stale_meta = temp_llm_index_dir / "meta.json"
-    stale_meta.write_text(json.dumps({"embedding_model": "old", "dim": 1}))
-
-    with patch("documents.models.Document.objects.all") as mock_all:
-        mock_queryset = MagicMock()
-        mock_queryset.exists.return_value = True
-        mock_queryset.__iter__.return_value = iter([real_document])
-        mock_all.return_value = mock_queryset
-        indexing.update_llm_index(rebuild=True)
-
-    assert not stale_meta.exists(), (
-        "update_llm_index(rebuild=True) must remove stale meta.json"
-    )
-
-
-@pytest.mark.django_db
 def test_update_llm_index_rebuilds_on_model_name_change(
     temp_llm_index_dir: Path,
     real_document: Document,
@@ -207,10 +191,10 @@ def test_update_llm_index_rebuilds_on_model_name_change(
         ):
             indexing.update_llm_index(rebuild=False)
 
-    store = indexing.get_vector_store()
-    # Schema metadata only updates when the table is dropped and recreated, never on
-    # incremental writes -- so "model-b" here proves a full rebuild happened.
-    assert store.stored_model_name() == "model-b"
+    with indexing.get_vector_store() as store:
+        # Schema metadata only updates when the table is dropped and recreated, never
+        # on incremental writes -- so "model-b" here proves a full rebuild happened.
+        assert store.stored_model_name() == "model-b"
 
 
 @pytest.mark.django_db
@@ -254,10 +238,10 @@ def test_update_llm_index_partial_update(
 
         indexing.update_llm_index(rebuild=False)
 
-    store = indexing.get_vector_store()
-    assert store.table_exists(), (
-        "Expected the LanceDB table to exist after incremental update"
-    )
+    with indexing.get_vector_store() as store:
+        assert store.table_exists(), (
+            "Expected the vector store table to exist after incremental update"
+        )
 
 
 @pytest.mark.django_db
@@ -269,10 +253,10 @@ def test_add_or_update_document_updates_existing_entry(
     indexing.update_llm_index(rebuild=True)
     indexing.llm_index_add_or_update_document(real_document)
 
-    store = indexing.get_vector_store()
-    assert store.table_exists(), (
-        "Expected the LanceDB table to exist after add-or-update"
-    )
+    with indexing.get_vector_store() as store:
+        assert store.table_exists(), (
+            "Expected the vector store table to exist after add-or-update"
+        )
 
 
 @pytest.mark.django_db
@@ -461,7 +445,7 @@ def test_query_similar_documents_empty_allow_list_fails_closed(
 
 
 class TestUpdateLlmIndexEmptyDocumentSet:
-    """update_llm_index must clear the LanceDB table when all documents are deleted.
+    """update_llm_index must clear the vector store table when all documents are deleted.
 
     Without this, the stale vectors are never cleared and subsequent similarity
     searches return phantom hits for document IDs that no longer exist in the DB.
@@ -489,10 +473,11 @@ class TestUpdateLlmIndexEmptyDocumentSet:
         )
         indexing.update_llm_index(rebuild=True)
 
-        store = indexing.get_vector_store()
-        assert store.table_exists(), (
-            "Precondition failed: expected the LanceDB table to exist before deletion"
-        )
+        with indexing.get_vector_store() as store:
+            assert store.table_exists(), (
+                "Precondition failed: expected the vector store table to exist "
+                "before deletion"
+            )
 
         # Step 2: delete all documents
         Document.objects.all().delete()
@@ -503,10 +488,11 @@ class TestUpdateLlmIndexEmptyDocumentSet:
         indexing.update_llm_index(rebuild=True)
 
         # Step 4: the table must be absent (no rows) — phantom vectors gone
-        store2 = indexing.get_vector_store()
-        assert not store2.table_exists(), (
-            "Expected the LanceDB table to be absent after rebuilding with no documents"
-        )
+        with indexing.get_vector_store() as store2:
+            assert not store2.table_exists(), (
+                "Expected the vector store table to be absent after rebuilding "
+                "with no documents"
+            )
 
 
 class TestDocumentUpdatedSignalTriggersLlmReindex:
@@ -578,11 +564,11 @@ class TestLlmIndexAddOrUpdateDocumentEmptyContent:
 
 
 @pytest.mark.django_db
-def test_llm_index_compact_uses_zero_retention(
+def test_llm_index_compact_uses_force(
     temp_llm_index_dir: Path,
     mocker: pytest_mock.MockerFixture,
 ) -> None:
-    """compact must use retention_seconds=0 to clear all MVCC history immediately."""
+    """compact must use force=True to rebuild the table and reclaim space immediately."""
     mock_store = mocker.MagicMock()
     mocker.patch(
         "paperless_ai.indexing.write_store",
@@ -594,7 +580,7 @@ def test_llm_index_compact_uses_zero_retention(
 
     indexing.llm_index_compact()
 
-    mock_store.compact.assert_called_once_with(retention_seconds=0)
+    mock_store.compact.assert_called_once_with(force=True)
 
 
 @pytest.mark.django_db
@@ -678,16 +664,14 @@ class TestLlmIndexLocking:
 
 @pytest.mark.django_db
 @pytest.mark.django_db
-class TestLanceDbIndexing:
+class TestVectorStoreIndexing:
     def test_get_vector_store_roundtrip(
         self,
         temp_llm_index_dir: Path,
         mock_embed_model: FakeEmbedding,
     ) -> None:
-        from paperless_ai.vector_store import PaperlessLanceVectorStore
-
-        store = indexing.get_vector_store()
-        assert isinstance(store, PaperlessLanceVectorStore)
+        with indexing.get_vector_store() as store:
+            assert isinstance(store, PaperlessSqliteVecVectorStore)
 
     def test_add_then_remove_document(
         self,
@@ -696,12 +680,13 @@ class TestLanceDbIndexing:
         real_document: Document,
     ) -> None:
         indexing.llm_index_add_or_update_document(real_document)
-        store = indexing.get_vector_store()
-        table = store.client.open_table(indexing.LLM_INDEX_TABLE)
-        assert table.count_rows() >= 1
+        with indexing.get_vector_store() as store:
+            assert store.table_exists()
+            count_sql = "SELECT count(*) FROM documents"
+            assert store.client.execute(count_sql).fetchone()[0] >= 1
 
-        indexing.llm_index_remove_document(real_document)
-        assert store.client.open_table(indexing.LLM_INDEX_TABLE).count_rows() == 0
+            indexing.llm_index_remove_document(real_document)
+            assert store.client.execute(count_sql).fetchone()[0] == 0
 
     def test_update_shrinks_chunks_without_orphans(
         self,
@@ -712,16 +697,17 @@ class TestLanceDbIndexing:
         real_document.content = "word " * 4000  # many chunks
         real_document.save()
         indexing.llm_index_add_or_update_document(real_document)
-        store = indexing.get_vector_store()
-        big = store.client.open_table(indexing.LLM_INDEX_TABLE).count_rows()
+        count_sql = "SELECT count(*) FROM documents"
+        with indexing.get_vector_store() as store:
+            big = store.client.execute(count_sql).fetchone()[0]
 
-        real_document.content = "short"  # one chunk
-        real_document.save()
-        indexing.llm_index_add_or_update_document(real_document)
+            real_document.content = "short"  # one chunk
+            real_document.save()
+            indexing.llm_index_add_or_update_document(real_document)
 
-        rows = store.client.open_table(indexing.LLM_INDEX_TABLE).count_rows()
-        assert rows < big
-        assert rows >= 1
+            rows = store.client.execute(count_sql).fetchone()[0]
+            assert rows < big
+            assert rows >= 1
 
 
 @pytest.mark.django_db
