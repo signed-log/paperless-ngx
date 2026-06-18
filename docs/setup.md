@@ -178,7 +178,7 @@ to enable polling and disable inotify. See [here](configuration.md#polling).
     - `fonts-liberation` for generating thumbnails for plain text
       files
     - `imagemagick` >= 6 for PDF conversion
-    - `gnupg` for handling encrypted documents
+    - `gnupg` for decrypting GPG-encrypted email
     - `libpq-dev` for PostgreSQL
     - `libmagic-dev` for mime type detection
     - `mariadb-client` for MariaDB compile time
@@ -271,8 +271,8 @@ to enable polling and disable inotify. See [here](configuration.md#polling).
     needs. Required settings for getting Paperless-ngx running are:
     - [`PAPERLESS_REDIS`](configuration.md#PAPERLESS_REDIS) should point to your broker, such as
       `redis://localhost:6379`.
-    - [`PAPERLESS_DBENGINE`](configuration.md#PAPERLESS_DBENGINE) is optional, and should be one of `postgres`,
-      `mariadb`, or `sqlite`
+    - [`PAPERLESS_DBENGINE`](configuration.md#PAPERLESS_DBENGINE) should be one of `postgresql`,
+      `mariadb`, or `sqlite`. PostgreSQL and MariaDB users must set this explicitly.
     - [`PAPERLESS_DBHOST`](configuration.md#PAPERLESS_DBHOST) should be the hostname on which your
       PostgreSQL server is running. Do not configure this to use
       SQLite instead. Also configure port, database name, user and
@@ -449,6 +449,12 @@ development documentation.
 
 You can migrate to Paperless-ngx from Paperless-ng or from the original
 Paperless project.
+
+!!! note
+
+    Upgrading an existing Paperless-ngx installation from v2 to v3 has its own
+    breaking changes and required steps. See the [v3 migration guide](migration-v3.md)
+    before upgrading.
 
 <h3 id="migration_ng">Migrating from Paperless-ng</h3>
 

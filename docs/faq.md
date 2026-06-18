@@ -70,7 +70,16 @@ elsewhere. Here are a couple notes about that.
 Paperless-ngx determines the type of a file by inspecting its content
 rather than its file extensions. However, files processed via the
 consumption directory will be rejected if they have a file extension that
-not supported by any of the available parsers.
+is not supported by any of the available parsers.
+
+## _Are duplicate documents rejected?_
+
+**A:** Not by default. As of v3, a file whose contents match an existing document is still
+consumed, and the duplicate is flagged in the UI — open the document and check the
+**Duplicates** tab to review documents that share the same content. If you prefer the old
+behavior of rejecting duplicates during consumption, set
+[`PAPERLESS_CONSUMER_DELETE_DUPLICATES`](configuration.md#PAPERLESS_CONSUMER_DELETE_DUPLICATES)
+to `true`.
 
 ## _Will paperless-ngx run on Raspberry Pi?_
 
@@ -117,6 +126,16 @@ Fahrer](https://github.com/Tooa) created a container template for that.
 able to run paperless, you're a bit on your own. If you can't run the
 docker image, the documentation has instructions for bare metal
 installs.
+
+## _Does Paperless-ngx use AI, and is my data private?_
+
+**A:** Paperless-ngx includes optional AI features — LLM-based suggestions, document chat,
+and similar-document retrieval — that are **disabled by default**. They only run when you
+enable them and configure an LLM backend. The built-in tag/correspondent suggestions use a
+local, non-LLM machine-learning model and do not send your data anywhere. If you enable the
+LLM features, document content is sent to whichever backend you configure — this can be a
+fully local backend (e.g. Ollama) or a remote provider. See
+[AI features](advanced_usage.md#ai-features) for details.
 
 ## _Which message broker should I use_?
 
