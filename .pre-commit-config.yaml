@@ -58,6 +58,7 @@ repos:
     rev: "v2.24.1"
     hooks:
       - id: pyproject-fmt
+        additional_dependencies: [tomli]
   # Dockerfile hooks
   - repo: https://github.com/AleksaC/hadolint-py
     rev: v2.14.0
